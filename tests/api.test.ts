@@ -43,7 +43,7 @@ describe('API route handlers', () => {
   test('POST /api/agents/[id]/run executes a real agent and persists the run', async () => {
     const { POST } = await import('@/app/api/agents/[id]/run/route');
     const res = await POST(new Request('http://localhost/api/agents/data-agent/run', { method: 'POST' }), {
-      params: { id: 'data-agent' },
+      params: Promise.resolve({ id: 'data-agent' }),
     });
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -233,7 +233,7 @@ describe('API route handlers', () => {
   test('GET /api/social/[platform] returns one platform’s analytics', async () => {
     const { GET } = await import('@/app/api/social/[platform]/route');
     const res = await GET(new Request('http://localhost/api/social/instagram'), {
-      params: { platform: 'instagram' },
+      params: Promise.resolve({ platform: 'instagram' }),
     });
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -245,7 +245,7 @@ describe('API route handlers', () => {
   test('GET /api/social/[platform] 404s for an untracked platform', async () => {
     const { GET } = await import('@/app/api/social/[platform]/route');
     const res = await GET(new Request('http://localhost/api/social/myspace'), {
-      params: { platform: 'myspace' },
+      params: Promise.resolve({ platform: 'myspace' }),
     });
     expect(res.status).toBe(404);
   });

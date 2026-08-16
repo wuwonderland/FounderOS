@@ -64,7 +64,7 @@ describe('POST /api/agents/conductor/chat', () => {
         method: 'POST',
         body: JSON.stringify({ message: '@sales-agent how are deals?' }),
       }),
-      { params: { id: 'conductor' } },
+      { params: Promise.resolve({ id: 'conductor' }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();

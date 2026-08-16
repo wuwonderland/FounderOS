@@ -24,12 +24,13 @@ const PatchSchema = z
   })
   .partial();
 
-export async function PATCH(req: Request, { params }: { params: { id: string } }) {
+export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const parsed = PatchSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
 
   const db = getDb();
-  const existing = db.leadMagnets.byId(params.id);
+  const existing = db.leadMagnets.byId(id);
   if (!existing) return NextResponse.json({ error: 'lead magnet not found' }, { status: 404 });
 
   // id and origin are not editable: the id is referenced by whatever links to
@@ -39,8 +40,9 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   return NextResponse.json({ leadMagnet: updated });
 }
 
-export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
-  const removed = getDb().leadMagnets.remove(params.id);
+export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const removed = getDb().leadMagnets.remove(id);
   if (!removed) return NextResponse.json({ error: 'lead magnet not found' }, { status: 404 });
-  return NextResponse.json({ ok: true, id: params.id });
+  return NextResponse.json({ ok: true, id });
 }

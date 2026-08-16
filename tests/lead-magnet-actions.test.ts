@@ -32,7 +32,7 @@ const create = async (name: string, url = 'https://example.com/x') => {
 
 const patch = (id: string, body: unknown) =>
   PATCH(new Request(`http://x/api/lead-magnets/${id}`, { method: 'PATCH', body: JSON.stringify(body) }), {
-    params: { id },
+    params: Promise.resolve({ id }),
   });
 
 describe('PATCH /api/lead-magnets/[id]', () => {
@@ -72,14 +72,14 @@ describe('PATCH /api/lead-magnets/[id]', () => {
 describe('DELETE /api/lead-magnets/[id]', () => {
   it('removes the row', async () => {
     const id = await create('Delete Me');
-    const res = await DELETE(new Request('http://x', { method: 'DELETE' }), { params: { id } });
+    const res = await DELETE(new Request('http://x', { method: 'DELETE' }), { params: Promise.resolve({ id }) });
     expect(res.status).toBe(200);
     const after = await patch(id, { status: 'live' });
     expect(after.status, 'the row should be gone').toBe(404);
   });
 
   it('404s when it was never there', async () => {
-    const res = await DELETE(new Request('http://x', { method: 'DELETE' }), { params: { id: 'ghost' } });
+    const res = await DELETE(new Request('http://x', { method: 'DELETE' }), { params: Promise.resolve({ id: 'ghost' }) });
     expect(res.status).toBe(404);
   });
 });

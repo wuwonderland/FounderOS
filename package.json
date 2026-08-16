@@ -14,6 +14,8 @@
     "brain:docs": "tsx scripts/generate-brain-docs.ts"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.111",
+    "@ai-sdk/openai": "^3.0.97",
     "@mediapipe/camera_utils": "^0.3.1675466862",
     "@mediapipe/hands": "^0.4.1675469240",
     "@notionhq/client": "^5.22.0",
@@ -22,6 +24,7 @@
     "ai": "^6.0.208",
     "better-sqlite3": "^11.3.0",
     "d3-force": "^3.0.0",
+    "framer-motion": "^11.11.9",
     "imapflow": "^1.4.0",
     "lucide-react": "^0.441.0",
     "next": "^16.3.1",

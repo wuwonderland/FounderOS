@@ -1,3 +1,4 @@
+import { elevenLabsStatus } from '@/lib/connectors/elevenlabs';
 import { emailStatus } from '@/lib/connectors/email';
 import { calendarStatus } from '@/lib/connectors/gcal';
 import { slackStatus } from '@/lib/connectors/slack';
@@ -66,6 +67,7 @@ const CHECKS: [string, ConnectorStatus['kind'], () => Promise<ConnectorStatus>][
   ['slack', 'slack', () => slackStatus(runtimeEnv())],
   ['payments', 'payments', () => paymentsStatus(runtimeEnv())],
   ['notion', 'notion', () => notionStatus(runtimeEnv())],
+  ['elevenlabs', 'voice', () => elevenLabsStatus(runtimeEnv())],
 ];
 
 export async function allConnectorStatuses(): Promise<ConnectorStatus[]> {
