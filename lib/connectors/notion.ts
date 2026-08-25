@@ -1,4 +1,5 @@
 import { Client } from '@notionhq/client';
+import type { PageObjectResponse } from '@notionhq/client';
 import type { ConnectorStatus } from '@/lib/connectors/types';
 
 export type NotionPage = { id: string; title: string; lastEdited: string; url: string };
@@ -60,4 +61,94 @@ export async function recentPages(
     }
     return { id: p.id, title, lastEdited: p.last_edited_time ?? '', url: p.url ?? '' };
   });
+}
+
+export type NotionCriterion = { id: string; title: string; url: string; text: string };
+
+function extractPlainText(rich: { plain_text?: string }[] | undefined): string {
+  return (rich ?? []).map((r) => r.plain_text ?? '').join('');
+}
+
+/** Flattens one page's properties into a readable "Field: value" block —
+    good enough for prompt injection (see lib/agents/orchestrator.ts), not
+    a full property-type-aware renderer. Unsupported property types are
+    skipped rather than guessed at. */
+function renderProperties(properties: PageObjectResponse['properties']): string {
+  const lines: string[] = [];
+  for (const [name, prop] of Object.entries(properties)) {
+    switch (prop.type) {
+      case 'title':
+        lines.push(`${name}: ${extractPlainText(prop.title)}`);
+        break;
+      case 'rich_text':
+        lines.push(`${name}: ${extractPlainText(prop.rich_text)}`);
+        break;
+      case 'select':
+        if (prop.select) lines.push(`${name}: ${prop.select.name}`);
+        break;
+      case 'multi_select':
+        if (prop.multi_select.length) lines.push(`${name}: ${prop.multi_select.map((s) => s.name).join(', ')}`);
+        break;
+      case 'checkbox':
+        lines.push(`${name}: ${prop.checkbox ? 'yes' : 'no'}`);
+        break;
+      case 'status':
+        if (prop.status) lines.push(`${name}: ${prop.status.name}`);
+        break;
+      case 'url':
+        if (prop.url) lines.push(`${name}: ${prop.url}`);
+        break;
+      default:
+        break; // date/number/people/relation/etc. — skip rather than guess a rendering
+    }
+  }
+  return lines.join('\n');
+}
+
+/** Fetches task specs / acceptance criteria from a configured Notion
+    database — used to ground the Dev Team Agent in the operator's actual
+    standards (see lib/agents/orchestrator.ts). The modern Notion API
+    queries a database's DATA SOURCE, not the database directly, so this
+    retrieves the database first to resolve its (first) data source id,
+    then queries that. Never throws — a missing key, bad database id, or a
+    database with no rows all come back as an honest empty/error result. */
+export async function fetchCriteria(
+  databaseId: string,
+  env: Record<string, string | undefined> = process.env,
+): Promise<{ ok: true; items: NotionCriterion[] } | { ok: false; error: string }> {
+  const notion = client(env);
+  if (!notion) return { ok: false, error: 'NOTION_API_KEY is not set' };
+  try {
+    const db = await notion.databases.retrieve({ database_id: databaseId });
+    // GetDatabaseResponse is a union with a "partial" variant (returned
+    // when the integration's access is limited) that lacks data_sources —
+    // narrow before reading it rather than asserting.
+    if (!('data_sources' in db)) return { ok: false, error: `no full access to database ${databaseId} (partial response)` };
+    const dataSourceId = db.data_sources[0]?.id;
+    if (!dataSourceId) return { ok: false, error: `database ${databaseId} has no data sources` };
+
+    const result = await notion.dataSources.query({ data_source_id: dataSourceId, page_size: 50 });
+    const items: NotionCriterion[] = [];
+    for (const page of result.results) {
+      if (page.object !== 'page' || !('properties' in page)) continue;
+      const p = page as PageObjectResponse;
+      let title = 'Untitled';
+      for (const prop of Object.values(p.properties)) {
+        if (prop.type === 'title') {
+          title = extractPlainText(prop.title) || title;
+          break;
+        }
+      }
+      items.push({ id: p.id, title, url: p.url ?? '', text: renderProperties(p.properties) });
+    }
+    return { ok: true, items };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** Renders fetched criteria as a plain-text block for prompt injection. */
+export function formatCriteriaForPrompt(items: NotionCriterion[]): string {
+  if (items.length === 0) return '';
+  return items.map((item) => `### ${item.title}\n${item.text}`).join('\n\n');
 }

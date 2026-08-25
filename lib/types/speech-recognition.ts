@@ -14,6 +14,7 @@ declare global {
   }
   interface SpeechRecognitionEventLike {
     results: ArrayLike<SpeechRecognitionResultLike>;
+    resultIndex: number;
   }
   interface SpeechRecognitionLike extends EventTarget {
     continuous: boolean;

@@ -19,6 +19,8 @@ import { webinarjamStatus } from '@/lib/connectors/webinarjam';
 import { trakyoStatus } from '@/lib/connectors/trakyo';
 import { metaAdsStatus } from '@/lib/connectors/meta-ads';
 import { ghlStatus } from '@/lib/connectors/ghl';
+import { supabaseStatus } from '@/lib/connectors/supabase';
+import { githubStatus } from '@/lib/connectors/github';
 import { getBrainProvider } from '@/lib/brain';
 import { resolveManychatKey, runtimeEnv } from '@/lib/creds';
 import type { ConnectorStatus } from '@/lib/connectors/types';
@@ -38,6 +40,8 @@ async function brainConnectorStatus(): Promise<ConnectorStatus> {
 const CHECKS: [string, ConnectorStatus['kind'], () => Promise<ConnectorStatus>][] = [
   ['gbrain', 'brain', brainConnectorStatus],
   ['llm', 'orchestration', llmStatus],
+  ['supabase', 'database', () => supabaseStatus(runtimeEnv())],
+  ['github', 'knowledge', () => githubStatus(runtimeEnv())],
   ['whatsapp', 'social', whatsappStatus],
   ['zernio', 'social', zernioStatus],
   ['beehiiv', 'social', () => beehiivStatus(runtimeEnv())],

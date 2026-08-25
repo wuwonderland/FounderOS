@@ -14,7 +14,8 @@ export type ConnectorKind =
   | 'knowledge'
   | 'local'
   | 'orchestration'
-  | 'voice';
+  | 'voice'
+  | 'database';
 
 export type ConnectorStatus = {
   id: string;

@@ -24,6 +24,33 @@ export async function elevenLabsStatus(env: Record<string, string | undefined> =
 
 export type SpeakResult = { ok: true; audio: ArrayBuffer } | { ok: false; detail: string };
 
+// Multilingual by design (OrbJarvis replies in whatever language the user
+// spoke — Traditional Chinese included) — never swap this for a
+// monolingual (English-only) ElevenLabs model.
+const TTS_MODEL_ID = 'eleven_multilingual_v2';
+
+/** Strips markdown/formatting artifacts a TTS engine would otherwise read
+    aloud literally (asterisks, backticks, header hashes, bullet markers).
+    Defense in depth on top of the brain's own "no markdown" system prompt —
+    every caller of synthesizeSpeech gets clean plain text regardless of
+    what upstream produced. */
+export function toSpeechText(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, ' ') // fenced code blocks
+    .replace(/`([^`]+)`/g, '$1') // inline code
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '') // markdown headers
+    .replace(/^\s*[-*+]\s+/gm, '') // bullet list markers
+    .replace(/^\s*\d+[.)]\s+/gm, '') // numbered list markers
+    .replace(/\*\*([^*]+)\*\*/g, '$1') // bold
+    .replace(/\*([^*]+)\*/g, '$1') // italic
+    .replace(/__([^_]+)__/g, '$1') // underscore bold
+    .replace(/_([^_]+)_/g, '$1') // underscore italic
+    .replace(/[#*_`]/g, '') // any stray leftover markdown characters
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{2,}/g, '\n')
+    .trim();
+}
+
 /** Synthesize `text` to speech via the ElevenLabs REST API. Returns an
     honest failure detail rather than throwing, so the caller can surface it
     in the UI the same way every other connector reports "not configured". */
@@ -33,14 +60,16 @@ export async function synthesizeSpeech(
 ): Promise<SpeakResult> {
   const key = env.ELEVENLABS_API_KEY;
   if (!key) return { ok: false, detail: 'ELEVENLABS_API_KEY is not set.' };
+  const cleanText = toSpeechText(text);
+  if (!cleanText) return { ok: false, detail: 'text has no speakable content after cleanup.' };
   const voiceId = env.ELEVENLABS_VOICE_ID || DEFAULT_VOICE_ID;
   try {
     const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
       method: 'POST',
       headers: { 'xi-api-key': key, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
       body: JSON.stringify({
-        text,
-        model_id: 'eleven_multilingual_v2',
+        text: cleanText,
+        model_id: TTS_MODEL_ID,
         // Higher stability + moderate similarity reads as a steadier, deeper
         // delivery than the ElevenLabs defaults — closest fit to a
         // "Jarvis"-style calm tone without needing a custom cloned voice.

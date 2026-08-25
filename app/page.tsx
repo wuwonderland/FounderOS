@@ -29,7 +29,6 @@ import {
   type Tone,
 } from "@/lib/pulse-history";
 import type { ConnectorStatus } from "@/lib/connectors/types";
-import { VoiceHUD } from "@/components/VoiceHUD";
 import { BIDock, type BITile } from "@/components/BIDock";
 import { AgentApprovalCard } from "@/components/AgentApprovalCard";
 import GestureControl from "@/components/GestureControl";
@@ -288,8 +287,6 @@ export default async function HomePage() {
 @media (prefers-reduced-motion: reduce) { .os-ticker-track { animation: none; } }`,
         }}
       />
-
-      <VoiceHUD />
 
       <PageHeader
         eyebrow="operator console"

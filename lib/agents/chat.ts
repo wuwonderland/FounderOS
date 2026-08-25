@@ -7,6 +7,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { chat as llmChat, type LlmMessage } from '@/lib/connectors/llm';
+import { localRecall, memoriesToPromptBlock, recallMemories, rememberTurn } from '@/lib/agents/memory';
 import type { FounderDb } from '@/lib/db';
 import type { RuntimeAgent } from '@/lib/agents/runtime';
 import type { AgentMessage } from '@/lib/schemas';
@@ -15,7 +16,7 @@ export type ChatResult = { reply: string; messages: AgentMessage[] };
 
 const SCREEN_CONTEXT_CAP = 4000;
 
-export function systemPromptFor(agent: RuntimeAgent, screenContext?: string): string {
+export function systemPromptFor(agent: RuntimeAgent, screenContext?: string, memories?: string): string {
   const lines = [
     `You are ${agent.name}, an operator agent inside Founder OS.`,
     agent.description,
@@ -27,6 +28,7 @@ export function systemPromptFor(agent: RuntimeAgent, screenContext?: string): st
       `The operator is currently looking at this screen — use it as grounding when they say "this", "here", or ask about what they see:\n${screenContext.slice(0, SCREEN_CONTEXT_CAP)}`,
     );
   }
+  if (memories) lines.push(memories);
   return lines.join('\n');
 }
 
@@ -53,7 +55,20 @@ export async function chatWithAgent(
   const llmMessages: LlmMessage[] = history.map((m) => ({ role: m.role, content: m.content }));
   const tools = agent.chatTools?.();
 
-  const result = await llmChat({ system: systemPromptFor(agent, opts.screenContext), messages: llmMessages, tools });
+  // Best-effort long-term recall (Supabase pgvector, see lib/agents/memory.ts).
+  // Falls back to a local keyword match over this same rolling history when
+  // Supabase/embeddings aren't configured — never throws, never blocks chat.
+  const memories = await recallMemories(agentId, message, {
+    // Exclude the just-inserted user turn itself — it's the query, not a
+    // useful past-context match.
+    localFallback: () => localRecall(history.slice(0, -1), message),
+  });
+
+  const result = await llmChat({
+    system: systemPromptFor(agent, opts.screenContext, memoriesToPromptBlock(memories)),
+    messages: llmMessages,
+    tools,
+  });
 
   if (result.toolCalls.length) {
     db.agentMessages.insert({
@@ -67,6 +82,10 @@ export async function chatWithAgent(
   }
 
   db.agentMessages.insert({ id: randomUUID(), agentId, role: 'assistant', content: result.text, toolCalls: [], createdAt: now() });
+
+  // Best-effort write to long-term memory; sqlite already has the turn above
+  // regardless of whether this lands (no Supabase config ⇒ silently false).
+  void rememberTurn(agentId, `User: ${message}\nAssistant: ${result.text}`).catch(() => {});
 
   return { reply: result.text, messages: db.agentMessages.byAgent(agentId) };
 }

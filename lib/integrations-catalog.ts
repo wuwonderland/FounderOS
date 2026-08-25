@@ -46,6 +46,7 @@ export const INTEGRATIONS: Integration[] = [
   { slug: 'vercel', name: 'Vercel', tagline: 'Deploys & logs', category: 'Developer' },
   { slug: 'sentry', name: 'Sentry', tagline: 'Errors & traces', category: 'Developer' },
   { slug: 'gitlab', name: 'GitLab', tagline: 'Repos & pipelines', category: 'Developer' },
+  { slug: 'supabase', name: 'Supabase', tagline: 'Postgres + pgvector memory', category: 'Developer', connectorId: 'supabase', envKeys: ['NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'] },
 
   // Scheduling
   { slug: 'googlecalendar', name: 'Google Calendar', tagline: 'Events & availability', category: 'Scheduling', connectorId: 'calendar', popular: true, envKeys: [] },

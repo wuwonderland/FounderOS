@@ -30,6 +30,8 @@ export const KEY_SLOTS: KeySlot[] = [
   { envVar: 'NOTION_API_KEY', label: 'Notion integration secret', group: 'Notion' },
   { envVar: 'MANYCHAT_API_KEY', label: 'ManyChat API key', group: 'Social', hint: 'ManyChat → Settings → API (Instagram DM automation)' },
   { envVar: 'GBRAIN_STORE', label: 'Brain-store path override', group: 'G-Brain' },
+  { envVar: 'NEXT_PUBLIC_SUPABASE_URL', label: 'Supabase project URL', group: 'Supabase' },
+  { envVar: 'SUPABASE_SERVICE_ROLE_KEY', label: 'Supabase service role key', group: 'Supabase', hint: 'Project Settings → API — server-only, never exposed client-side' },
 ];
 
 export function maskSecret(value: string): string {

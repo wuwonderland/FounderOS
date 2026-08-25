@@ -20,9 +20,10 @@
     "@mediapipe/hands": "^0.4.1675469240",
     "@notionhq/client": "^5.22.0",
     "@slack/web-api": "^7.16.0",
+    "@supabase/supabase-js": "^2.109.0",
     "@types/d3-force": "^3.0.10",
     "ai": "^6.0.208",
-    "better-sqlite3": "^11.3.0",
+    "better-sqlite3": "^11.10.0",
     "d3-force": "^3.0.0",
     "framer-motion": "^11.11.9",
     "imapflow": "^1.4.0",
@@ -34,6 +35,7 @@
     "react-dom": "^18.3.1",
     "simple-icons": "^16.27.0",
     "stripe": "^22.2.0",
+    "ws": "^8.21.3",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -42,6 +44,7 @@
     "@types/nodemailer": "^8.0.1",
     "@types/react": "^18.3.8",
     "@types/react-dom": "^18.3.0",
+    "@types/ws": "^8.18.1",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.12",

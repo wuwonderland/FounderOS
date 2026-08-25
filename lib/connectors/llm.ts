@@ -1,11 +1,13 @@
 /**
- * LLM connector — backs agent & Conductor chat, preferring the Vercel AI
- * Gateway with an automatic fallback to native ANTHROPIC_API_KEY /
- * OPENAI_API_KEY when the gateway is unconfigured OR fails at call time
- * (e.g. an unauthenticated/expired gateway key) — plus a `stub` provider
+ * LLM connector — backs agent & Conductor chat. Preference order: the local
+ * Hermes Agent proxy (hermes proxy start — free, OAuth-backed, no per-token
+ * billing) first, then the Vercel AI Gateway, then native ANTHROPIC_API_KEY /
+ * OPENAI_API_KEY — each one only tried if the previous is unconfigured or
+ * actually fails at call time (e.g. Hermes isn't running, or an
+ * unauthenticated/expired gateway key). Plus a `stub` provider
  * (LLM_PROVIDER=stub) that is deterministic and makes NO network call, so the
- * whole agent-chat stack is testable offline. Status stays honest: no key
- * anywhere in the chain ⇒ not_configured, never a fake "connected".
+ * whole agent-chat stack is testable offline. Status stays honest: no
+ * provider reachable ⇒ not_configured, never a fake "connected".
  */
 import { z } from 'zod';
 import type { LanguageModel } from 'ai';
@@ -42,6 +44,13 @@ const GATEWAY_KEY = 'AI_GATEWAY_API_KEY';
 const DEFAULT_MODEL = process.env.LLM_MODEL ?? 'anthropic/claude-sonnet-5';
 const DEFAULT_ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-5';
 const DEFAULT_OPENAI_MODEL = process.env.OPENAI_MODEL ?? 'gpt-4o';
+// `hermes proxy start` binds 127.0.0.1:8645 by default (verified against the
+// installed `hermes proxy start --help` — not guessed).
+const DEFAULT_HERMES_URL = process.env.HERMES_PROXY_URL ?? 'http://127.0.0.1:8645/v1';
+// The proxy attaches your real upstream credentials server-side and doesn't
+// validate the bearer it's given — this is a placeholder, not a secret.
+const HERMES_PLACEHOLDER_KEY = 'hermes-local-proxy';
+const DEFAULT_HERMES_MODEL = process.env.HERMES_MODEL ?? 'poolside/laguna-s-2.1:free';
 
 /** process.env first (Next auto-loads .env.local), then Alex's cred files. */
 function resolveGatewayKey(): string | undefined {
@@ -160,6 +169,23 @@ export function createOpenAIProvider(model: string = DEFAULT_OPENAI_MODEL): LlmP
   };
 }
 
+/** Routes through the local `hermes proxy` (OpenAI-compatible endpoint —
+    `hermes proxy start`, default http://127.0.0.1:8645/v1). Free and
+    OAuth-backed instead of a paid API key; the proxy attaches real upstream
+    credentials, so the bearer this sends is a placeholder. If the proxy
+    isn't running the fetch fails fast (localhost, ECONNREFUSED) and the
+    fallback chain honestly moves on to the next provider. */
+export function createHermesProvider(baseURL: string = DEFAULT_HERMES_URL, model: string = DEFAULT_HERMES_MODEL): LlmProvider {
+  return {
+    name: 'hermes',
+    async chat(req) {
+      const { createOpenAI } = await import('@ai-sdk/openai');
+      const hermes = createOpenAI({ baseURL, apiKey: HERMES_PLACEHOLDER_KEY });
+      return runChat(hermes.chat(req.model ?? model), req);
+    },
+  };
+}
+
 /** Tries every configured provider in preference order — gateway, then
     native Anthropic, then native OpenAI — and only moves to the next one
     when the current provider is unconfigured OR actually fails (e.g. an
@@ -168,6 +194,10 @@ export function createOpenAIProvider(model: string = DEFAULT_OPENAI_MODEL): LlmP
     real error is thrown. */
 export function createFallbackProvider(): LlmProvider {
   const chain: [string, () => boolean, () => LlmProvider][] = [
+    // Always "configured" — a URL with a sane default, not a key. If the
+    // proxy isn't actually running, the chat call fails fast (localhost) and
+    // the loop below honestly moves to the next provider.
+    ['hermes', () => true, () => createHermesProvider()],
     ['gateway', () => Boolean(resolveGatewayKey()), () => createGatewayProvider()],
     ['anthropic', () => Boolean(resolveAnthropicKey()), () => createAnthropicProvider()],
     ['openai', () => Boolean(resolveOpenAIKey()), () => createOpenAIProvider()],
@@ -178,7 +208,7 @@ export function createFallbackProvider(): LlmProvider {
       const configured = chain.filter(([, has]) => has());
       if (configured.length === 0) {
         throw new Error(
-          'No LLM provider configured — set AI_GATEWAY_API_KEY (preferred), or ANTHROPIC_API_KEY / OPENAI_API_KEY, in .env.local.',
+          'No LLM provider configured — start the Hermes proxy (`hermes proxy start`), set AI_GATEWAY_API_KEY (preferred), or ANTHROPIC_API_KEY / OPENAI_API_KEY, in .env.local.',
         );
       }
       let lastErr: unknown;
@@ -198,6 +228,7 @@ export function createFallbackProvider(): LlmProvider {
 export function getLlmProvider(): LlmProvider {
   const name = process.env.LLM_PROVIDER;
   if (name === 'stub') return stubLlmProvider;
+  if (name === 'hermes') return createHermesProvider();
   if (name === 'gateway') return createGatewayProvider();
   if (name === 'anthropic') return createAnthropicProvider();
   if (name === 'openai') return createOpenAIProvider();
@@ -210,10 +241,37 @@ export function chat(req: LlmChatRequest): Promise<LlmChatResult> {
   return getLlmProvider().chat(req);
 }
 
+/** Quick TCP-level reachability check — localhost only, so a short timeout
+    doesn't risk the slow-remote-call problem the rest of this file avoids
+    (see file header). Used only to make llmStatus() honest about whether
+    the Hermes proxy is actually running, not just configured-by-default. */
+async function isHermesReachable(): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 300);
+    try {
+      await fetch(DEFAULT_HERMES_URL.replace(/\/v1\/?$/, '/'), { signal: controller.signal });
+      return true;
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch {
+    return false;
+  }
+}
+
 export async function llmStatus(): Promise<ConnectorStatus> {
   const base = { id: 'llm', name: 'LLM (Gateway)', kind: 'orchestration' } as const;
   if (process.env.LLM_PROVIDER === 'stub') {
     return { ...base, state: 'connected', detail: 'stub provider active (tests)' };
+  }
+  if (await isHermesReachable()) {
+    return {
+      ...base,
+      name: 'LLM (Hermes proxy)',
+      state: 'connected',
+      detail: `hermes proxy reachable at ${DEFAULT_HERMES_URL} · model ${DEFAULT_HERMES_MODEL}`,
+    };
   }
   if (resolveGatewayKey()) {
     return { ...base, state: 'connected', detail: `Vercel AI Gateway · default model ${DEFAULT_MODEL}` };
@@ -237,6 +295,6 @@ export async function llmStatus(): Promise<ConnectorStatus> {
   return {
     ...base,
     state: 'not_configured',
-    detail: 'Set AI_GATEWAY_API_KEY (preferred), or ANTHROPIC_API_KEY / OPENAI_API_KEY as a fallback, in .env.local.',
+    detail: 'Start the Hermes proxy (`hermes proxy start`), set AI_GATEWAY_API_KEY (preferred), or ANTHROPIC_API_KEY / OPENAI_API_KEY, in .env.local.',
   };
 }

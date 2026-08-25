@@ -49,7 +49,7 @@ back to local brain-store grep when the database is unreachable. Default
 Alex's directive: real integrations, not larp. Strict black & white theme
 (UI polish deferred — he'll design it himself once everything is wired).
 
-- `lib/connectors/` — 12 connector groups, all returning honest
+- `lib/connectors/` — 13 connector groups, all returning honest
   `ConnectorStatus` (never fake "connected"): `email.ts` (4 IMAP slots),
   `slack.ts`, `payments.ts` (Stripe + registry), `notion.ts`, `gbrain.ts`,
   `zernio.ts` (key from ~/.config/social/.env — LIVE), `attio.ts` (key reused
@@ -57,7 +57,15 @@ Alex's directive: real integrations, not larp. Strict black & white theme
   LIVE), `miro.ts` (knowledge/.env.agents — LIVE),
   `wispr.ts` (local flow.sqlite readonly — LIVE), `obsidian.ts` (vault fs;
   needs macOS Documents permission), `local-stack.ts` (local service ports
-  + tmux + brew binaries).
+  + tmux + brew binaries), `supabase.ts` (`NEXT_PUBLIC_SUPABASE_URL` +
+  `SUPABASE_SERVICE_ROLE_KEY` — a project separate from gbrain's own
+  Supabase-backed "Second Brain"; see `supabase/migrations/README.md`).
+  Route A (2026-08-20): Supabase + pgvector **augments** sqlite, it doesn't
+  replace it — `lib/agents/memory.ts` gives agent chat best-effort long-term
+  semantic recall (`agent_memories`, falls back to a local keyword match over
+  `db.agentMessages` when Supabase/embeddings aren't configured) and
+  `lib/crm/users.ts` wraps the `users` table; both no-op honestly instead of
+  throwing when unconfigured.
 - `lib/creds.ts` — credential resolution: process.env first, then Alex's
   canonical files at runtime. NEVER copy secret values into this repo.
 - `lib/agents/runtime.ts` + `real.ts` — agent registry; every seeded agent row
