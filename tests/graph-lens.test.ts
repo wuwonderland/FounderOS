@@ -32,7 +32,9 @@ describe('graph lenses — Alex taxonomy (2026-07-12)', () => {
 
   test('entity lenses match by node kind against the real seeded graph', () => {
     expect(lensNodeSet('ent-people', ctx).size).toBe(5);
-    expect(lensNodeSet('ent-subagents', ctx).size).toBe(30);
+    // 30 pre-existing agents + dev/ops/research (the live-agent execution
+    // loop's roster, lib/agents/tools/index.ts's LIVE_AGENT_IDS).
+    expect(lensNodeSet('ent-subagents', ctx).size).toBe(33);
     expect(lensNodeSet('ent-departments', ctx).size).toBe(6);
     expect(lensNodeSet('ent-sops', ctx).size).toBeGreaterThan(20);
     expect(lensNodeSet('ent-tools', ctx).size).toBeGreaterThan(20);

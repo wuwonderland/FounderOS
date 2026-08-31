@@ -131,6 +131,61 @@ export async function runTypecheck(): Promise<SandboxResult<{ passed: boolean; o
   }
 }
 
+/** Applies a unified diff to a file's CURRENT content WITHOUT touching the
+    real working tree — same "compute, don't mutate" spirit as diffContent.
+    Used by lib/agents/tools/dev.ts's `propose_patch` tool: the model reads a
+    file, produces a diff against it, and this resolves what the file would
+    look like if that diff were applied — a proposal for
+    lib/agents/orchestrator.ts to store, not a real write. Tries `git apply`
+    at a couple of common path-strip levels (-p1 for "a/…"/"b/…"-prefixed
+    diffs, -p0 for bare-path diffs) since the calling model doesn't always
+    format headers the same way. */
+export async function applyUnifiedDiff(
+  relativePath: string,
+  diff: string,
+): Promise<SandboxResult<{ previousContent: string; newContent: string }>> {
+  const existing = await readFile(relativePath);
+  const previousContent = existing.ok ? existing.data : '';
+
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'founderos-patch-'));
+  try {
+    const targetInTemp = path.join(dir, relativePath);
+    await fs.mkdir(path.dirname(targetInTemp), { recursive: true });
+    await fs.writeFile(targetInTemp, previousContent, 'utf8');
+    const patchFile = path.join(dir, '__patch__.diff');
+    await fs.writeFile(patchFile, diff.endsWith('\n') ? diff : `${diff}\n`, 'utf8');
+
+    let applied = false;
+    let lastError = '';
+    for (const strip of ['-p1', '-p0']) {
+      try {
+        await execFileAsync('git', ['apply', strip, '--whitespace=nowarn', patchFile], {
+          cwd: dir,
+          maxBuffer: MAX_BUFFER,
+        });
+        applied = true;
+        break;
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+      }
+    }
+    if (!applied) {
+      remember('diff', `apply failed for ${relativePath}: ${lastError}`, false);
+      return { ok: false, error: `diff did not apply: ${lastError}` };
+    }
+
+    const newContent = await fs.readFile(targetInTemp, 'utf8');
+    remember('diff', `patch preview computed for ${relativePath} (not written to disk)`, true);
+    return { ok: true, data: { previousContent, newContent } };
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    remember('diff', `${relativePath}: ${detail}`, false);
+    return { ok: false, error: detail };
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 /** Computes a real unified diff between two strings using git's own
     diffing engine — WITHOUT touching the actual working tree or the real
     target file. Used to show a proposed-but-not-yet-applied change (e.g.

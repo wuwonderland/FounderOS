@@ -2,10 +2,12 @@ import Database from 'better-sqlite3';
 import { isValidCron } from '@/lib/cron';
 import {
   AgentCronSchema,
+  AgentExecRunSchema,
   AgentMessageSchema,
   AgentRunSchema,
   AgentSchema,
   AgentTaskSchema,
+  ToolCallLogSchema,
   BroadcastReplySchema,
   BroadcastSchema,
   ContactTagSchema,
@@ -34,9 +36,11 @@ import {
   ToolSchema,
   type Agent,
   type AgentCron,
+  type AgentExecRun,
   type AgentMessage,
   type AgentRun,
   type AgentTask,
+  type ToolCallLog,
   type Broadcast,
   type BroadcastReply,
   type ContactTag,
@@ -306,6 +310,16 @@ CREATE TABLE IF NOT EXISTS workflows (
   ord INTEGER NOT NULL DEFAULT 0,
   steps TEXT NOT NULL DEFAULT '[]'
 );
+CREATE TABLE IF NOT EXISTS tool_calls (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES agent_runs(id),
+  step INTEGER NOT NULL,
+  tool_name TEXT NOT NULL,
+  args_json TEXT NOT NULL DEFAULT '{}',
+  result_json TEXT NOT NULL DEFAULT '{}',
+  ok INTEGER NOT NULL,
+  duration_ms INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS skills (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -326,6 +340,25 @@ function migrateAgentsTable(db: InstanceType<typeof Database>): void {
   );
   if (!columns.has('parent_id')) db.exec('ALTER TABLE agents ADD COLUMN parent_id TEXT');
   if (!columns.has('instance')) db.exec("ALTER TABLE agents ADD COLUMN instance TEXT NOT NULL DEFAULT 'builtin'");
+  if (!columns.has('live')) db.exec('ALTER TABLE agents ADD COLUMN live INTEGER NOT NULL DEFAULT 0');
+}
+
+/** agent_runs predates the live-agent execution loop (lib/agents/executor.ts)
+    and its richer observability needs (see AgentExecRunSchema in
+    lib/schemas.ts). These columns are additive and nullable — the existing
+    runtime.ts writer (id, agent_id, started_at, finished_at, ok, summary)
+    keeps working untouched; only the new agentExecRuns repo methods below
+    read/write the new ones. `ended_at` is deliberately NOT a new column —
+    it's the same moment `finished_at` already records, just under the name
+    the execution-loop spec used; reusing the existing column avoids two
+    "when did this run end" columns telling two different stories. */
+function migrateAgentRunsTable(db: InstanceType<typeof Database>): void {
+  const columns = new Set((db.pragma('table_info(agent_runs)') as { name: string }[]).map((c) => c.name));
+  if (!columns.has('status')) db.exec('ALTER TABLE agent_runs ADD COLUMN status TEXT');
+  if (!columns.has('step_count')) db.exec('ALTER TABLE agent_runs ADD COLUMN step_count INTEGER');
+  if (!columns.has('input_tokens')) db.exec('ALTER TABLE agent_runs ADD COLUMN input_tokens INTEGER');
+  if (!columns.has('output_tokens')) db.exec('ALTER TABLE agent_runs ADD COLUMN output_tokens INTEGER');
+  if (!columns.has('error')) db.exec('ALTER TABLE agent_runs ADD COLUMN error TEXT');
 }
 
 /** Databases created before the funnel-space build lack these columns. */
@@ -365,6 +398,7 @@ type AgentRow = {
   tools: string;
   parent_id: string | null;
   instance: string;
+  live: number;
 };
 
 function rowToAgent(row: AgentRow): Agent {
@@ -380,6 +414,7 @@ function rowToAgent(row: AgentRow): Agent {
     tools: JSON.parse(row.tools),
     parentId: row.parent_id,
     instance: row.instance,
+    live: Boolean(row.live),
   });
 }
 
@@ -397,6 +432,7 @@ export function openDb(path: string) {
   db.pragma('journal_mode = WAL');
   db.exec(DDL);
   migrateAgentsTable(db);
+  migrateAgentRunsTable(db);
   migrateLeadMagnetsTable(db);
   migrateFunnelContactsTable(db);
   migrateSkillsTable(db);
@@ -432,10 +468,10 @@ export function openDb(path: string) {
     },
     insert(a: Agent): void {
       db.prepare(
-        'INSERT OR REPLACE INTO agents (id, department_id, name, role, status, tier, description, model, tools, parent_id, instance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT OR REPLACE INTO agents (id, department_id, name, role, status, tier, description, model, tools, parent_id, instance, live) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       ).run(
         a.id, a.departmentId, a.name, a.role, a.status, a.tier, a.description, a.model,
-        JSON.stringify(a.tools), a.parentId, a.instance,
+        JSON.stringify(a.tools), a.parentId, a.instance, a.live ? 1 : 0,
       );
     },
     deleteWhereIdNotIn(ids: string[]): void {
@@ -604,6 +640,90 @@ export function openDb(path: string) {
       db.prepare(
         'INSERT OR REPLACE INTO agent_runs (id, agent_id, started_at, finished_at, ok, summary) VALUES (?, ?, ?, ?, ?, ?)',
       ).run(run.id, run.agentId, run.startedAt, run.finishedAt, run.ok ? 1 : 0, run.summary);
+    },
+  };
+
+  const rowToExecRun = (r: any): AgentExecRun =>
+    AgentExecRunSchema.parse({
+      id: r.id,
+      agentId: r.agent_id,
+      startedAt: r.started_at,
+      endedAt: r.finished_at,
+      status: r.status,
+      stepCount: r.step_count ?? 0,
+      inputTokens: r.input_tokens ?? 0,
+      outputTokens: r.output_tokens ?? 0,
+      error: r.error,
+    });
+
+  // Live-agent execution loop observability (lib/agents/executor.ts). Shares
+  // the agent_runs TABLE with the plain `agentRuns` repo above — see
+  // migrateAgentRunsTable's docstring — but reads/writes the richer column
+  // set through its own schema. One row per finished run, written once at
+  // the end (never a live "still running" row) — same convention
+  // createRuntime's run() already uses for the existing agent_runs writer.
+  const agentExecRuns = {
+    byAgent(agentId: string): AgentExecRun[] {
+      return db
+        .prepare('SELECT * FROM agent_runs WHERE agent_id = ? AND status IS NOT NULL ORDER BY started_at DESC')
+        .all(agentId)
+        .map(rowToExecRun);
+    },
+    get(id: string): AgentExecRun | undefined {
+      const row = db.prepare('SELECT * FROM agent_runs WHERE id = ?').get(id);
+      return row ? rowToExecRun(row) : undefined;
+    },
+    insert(run: AgentExecRun): void {
+      db.prepare(
+        `INSERT OR REPLACE INTO agent_runs
+          (id, agent_id, started_at, finished_at, ok, summary, status, step_count, input_tokens, output_tokens, error)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        run.id,
+        run.agentId,
+        run.startedAt,
+        run.endedAt,
+        run.status === 'completed' ? 1 : 0,
+        run.error ?? '',
+        run.status,
+        run.stepCount,
+        run.inputTokens,
+        run.outputTokens,
+        run.error,
+      );
+    },
+  };
+
+  const rowToToolCall = (r: any): ToolCallLog =>
+    ToolCallLogSchema.parse({
+      id: r.id,
+      runId: r.run_id,
+      step: r.step,
+      toolName: r.tool_name,
+      args: JSON.parse(r.args_json),
+      result: JSON.parse(r.result_json),
+      ok: Boolean(r.ok),
+      durationMs: r.duration_ms,
+    });
+
+  const toolCalls = {
+    byRun(runId: string): ToolCallLog[] {
+      return db.prepare('SELECT * FROM tool_calls WHERE run_id = ? ORDER BY rowid').all(runId).map(rowToToolCall);
+    },
+    insert(call: ToolCallLog): void {
+      db.prepare(
+        `INSERT OR REPLACE INTO tool_calls (id, run_id, step, tool_name, args_json, result_json, ok, duration_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        call.id,
+        call.runId,
+        call.step,
+        call.toolName,
+        JSON.stringify(call.args),
+        JSON.stringify(call.result),
+        call.ok ? 1 : 0,
+        call.durationMs,
+      );
     },
   };
 
@@ -1155,6 +1275,8 @@ export function openDb(path: string) {
     personas,
     phases,
     agentRuns,
+    agentExecRuns,
+    toolCalls,
     agentMessages,
     agentTasks,
     agentCrons,

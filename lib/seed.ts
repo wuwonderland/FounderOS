@@ -53,6 +53,11 @@ const departments: Department[] = [
 // (`instance` records that binding; everything is 'builtin' until then).
 // Worker rows underneath them do one specific task each and sit at the
 // bottom of the hierarchy.
+// `live` (Conductor candidate set + a real tool-executing runAgent() loop —
+// see lib/agents/executor.ts) is optional on Agent (see AgentSchema) and
+// only ever set explicitly, `true`, on the three agents that actually have
+// one — omitted everywhere else below rather than spelling out `live:
+// false` 30 times.
 const agents: Agent[] = [
   // ── TECH: AI head ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
   {
@@ -450,6 +455,65 @@ const agents: Agent[] = [
     tools: ['fathom', 'slack'],
     parentId: 'client-roster',
     instance: 'builtin',
+  },
+
+  // ── Live agents: real tool-executing runAgent() loop (lib/agents/executor.ts) ──
+  // Exactly these three enter the Conductor's routable candidate set
+  // (lib/agents/conductor.ts filters on `live`). Every other agent above
+  // keeps its existing read-only run()/chatTools() and is unaffected.
+  // Nested under an existing instance slot rather than parentId: null —
+  // they're specialists, not new instance slots, and /org's layout is
+  // frozen (see CLAUDE.md) so a new top-level TECH sibling isn't the shape
+  // to add here.
+  {
+    id: 'dev',
+    departmentId: 'dept-tech',
+    name: 'Dev Agent',
+    role: 'Codebase Read & Patch',
+    status: 'active',
+    tier: 'specialist',
+    description: 'Reads the FounderOS codebase and proposes patches as unified diffs. Writes are Draft-only — every proposal goes through the Dev Team Agent Slack approval gate before anything touches disk.',
+    model: 'tool-calling loop (lib/agents/executor.ts)',
+    tools: ['read_file', 'list_files', 'search_code', 'propose_patch'],
+    parentId: 'conductor',
+    instance: 'builtin',
+    live: true,
+  },
+  {
+    id: 'ops',
+    departmentId: 'dept-comms',
+    name: 'Ops Agent',
+    role: 'Inbox & Calendar Triage',
+    status: 'active',
+    tier: 'specialist',
+    description: "Triages Gmail and Google Calendar via FounderOS's own OAuth credentials. Never sends mail or creates events itself — draft_reply and create_event always return a proposal for human review.",
+    model: 'tool-calling loop (lib/agents/executor.ts)',
+    tools: ['gmail_search', 'gmail_read', 'calendar_list', 'draft_reply', 'create_event'],
+    parentId: 'comms-agent',
+    instance: 'builtin',
+    live: true,
+  },
+  {
+    // dept-clients rather than dept-tech: TECH's SOP-task fan is already at
+    // capacity for the hand-tuned tree-layout geometry (lib/tree-layout.ts,
+    // enforced by tests/tree-layout.test.ts's ≥48px sibling-spacing check) —
+    // adding both new TECH tools there would crowd it past that. Research
+    // genuinely serves account/prospect research ahead of client calls, so
+    // this isn't just a geometry workaround; a new top-level instance slot
+    // (parentId: null) rather than nested, since its natural parent
+    // (data-agent) lives in a different department.
+    id: 'research',
+    departmentId: 'dept-clients',
+    name: 'Research Agent',
+    role: 'Web Research',
+    status: 'active',
+    tier: 'specialist',
+    description: 'Searches and reads the web to answer questions and gather sources — prospect/market research ahead of client calls. save_note never persists on its own — it returns a proposal for human review.',
+    model: 'tool-calling loop (lib/agents/executor.ts)',
+    tools: ['web_search', 'web_fetch', 'save_note'],
+    parentId: null,
+    instance: 'builtin',
+    live: true,
   },
 ];
 
@@ -948,6 +1012,44 @@ const sopTasks: SopTask[] = [
       'Approve scope changes before work starts',
       'Review account health scores with Client Success monthly',
       'Sign off renewals and hand pricing changes to Sales',
+    ],
+  },
+
+  // ── Live agents (lib/agents/executor.ts's tool-executing loop) ─────────
+  {
+    id: 'sop-dev', departmentId: 'dept-tech', assigneeKind: 'agent', assigneeId: 'dev',
+    title: 'Read the codebase and propose patches',
+    summary: 'Read-only investigation, Draft-only patches — every write goes through human approval.',
+    steps: [
+      'Read the target file(s) before proposing any change',
+      'Search and list files to scope the change to the right targets',
+      'Draft a unified diff and hand it to orchestrator.ts as a proposal',
+      'Never write to disk directly — propose_patch always returns approval_required',
+      'Wait for a human to approve via the Dev Team Agent Slack gate before anything lands',
+    ],
+  },
+  {
+    id: 'sop-ops', departmentId: 'dept-comms', assigneeKind: 'agent', assigneeId: 'ops',
+    title: 'Triage the inbox and calendar',
+    summary: "Read Gmail and Calendar via FounderOS's own OAuth credentials; never send or create anything unreviewed.",
+    steps: [
+      'Search Gmail for messages matching the operator\'s request',
+      'Read the full message before drafting any reply',
+      'List calendar events in the relevant range',
+      'Propose a reply or a new event — draft_reply/create_event always return approval_required',
+      'Never claim a reply was sent or an event was created before a human approves it',
+    ],
+  },
+  {
+    id: 'sop-research', departmentId: 'dept-clients', assigneeKind: 'agent', assigneeId: 'research',
+    title: 'Research a question across the web',
+    summary: 'Search and read pages to answer questions with cited sources.',
+    steps: [
+      'Search the web for sources relevant to the question',
+      'Fetch and read the most promising pages in full',
+      'Cross-check claims across more than one source before treating them as settled',
+      'Cite the URLs actually drawn on, never invented ones',
+      'Propose a note via save_note for anything worth keeping — it never persists on its own',
     ],
   },
 ];

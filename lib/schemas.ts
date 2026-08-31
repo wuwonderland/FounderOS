@@ -29,6 +29,17 @@ export const AgentSchema = z.object({
   // an OpenClaw/Claude Code instance name once the dedicated host is live).
   parentId: z.string().nullable().default(null),
   instance: z.string().min(1).default('builtin'),
+  // Whether this agent is in the Conductor's routable candidate set (see
+  // lib/agents/conductor.ts) and has a real tool-executing runAgent() loop
+  // (lib/agents/executor.ts) behind it — as opposed to the read-only
+  // status-check run() every other seeded agent has. Optional rather than
+  // `.default(false)` on purpose: a `.default()` makes the field required
+  // in every hand-authored `Agent` literal across the codebase (tests,
+  // seed data) even when it's always false there — every reader that cares
+  // about a definite boolean should treat a missing value as `false`
+  // (`agent.live ?? false` / `Boolean(agent.live)`), same as
+  // lib/db.ts's rowToAgent already does reading the DB column.
+  live: z.boolean().optional(),
 });
 
 export const ToolSchema = z.object({
@@ -132,6 +143,40 @@ export const AgentRunSchema = z.object({
   finishedAt: z.string().min(1),
   ok: z.boolean(),
   summary: z.string(),
+});
+
+// ── Live agent execution loop observability (lib/agents/executor.ts) ──────
+// Reuses the `agent_runs` table above (same runId space, same "one row per
+// finished run" convention as the existing AgentRunSchema/agentRuns repo)
+// but with the richer columns runAgent() needs — step count, token usage,
+// a real status enum instead of a single `ok` boolean, and an error string.
+// A separate Zod schema (not a superset of AgentRunSchema) because the two
+// read different, mostly-disjoint column sets off the same table; see
+// lib/db.ts's migrateAgentRunsTable for the additive ALTER that makes both
+// live side by side.
+export const AgentExecRunStatusSchema = z.enum(['completed', 'failed', 'timeout']);
+
+export const AgentExecRunSchema = z.object({
+  id: z.string().min(1),
+  agentId: z.string().min(1),
+  startedAt: z.string().min(1),
+  endedAt: z.string().min(1),
+  status: AgentExecRunStatusSchema,
+  stepCount: z.number().int().nonnegative(),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  error: z.string().nullable(),
+});
+
+export const ToolCallLogSchema = z.object({
+  id: z.string().min(1),
+  runId: z.string().min(1),
+  step: z.number().int().nonnegative(),
+  toolName: z.string().min(1),
+  args: z.unknown(),
+  result: z.unknown(),
+  ok: z.boolean(),
+  durationMs: z.number().int().nonnegative(),
 });
 
 export const BroadcastReplySchema = z.object({
@@ -569,6 +614,9 @@ export type AgentTier = z.infer<typeof AgentTierSchema>;
 export type Broadcast = z.infer<typeof BroadcastSchema>;
 export type BroadcastReply = z.infer<typeof BroadcastReplySchema>;
 export type AgentRun = z.infer<typeof AgentRunSchema>;
+export type AgentExecRunStatus = z.infer<typeof AgentExecRunStatusSchema>;
+export type AgentExecRun = z.infer<typeof AgentExecRunSchema>;
+export type ToolCallLog = z.infer<typeof ToolCallLogSchema>;
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;
 export type AgentToolCall = z.infer<typeof AgentToolCallSchema>;
 export type AgentMessageRole = z.infer<typeof AgentMessageRoleSchema>;

@@ -43,7 +43,11 @@ describe('openDb', () => {
       instance: 'builtin',
     };
     db.agents.insert(agent);
-    expect(db.agents.all()).toEqual([agent]);
+    // rowToAgent always reads a definite `live` boolean off the live
+    // column (default 0) even though the input above omits it (see
+    // AgentSchema's `live` — optional so callers don't have to spell out
+    // `live: false` everywhere; lib/db.ts normalizes it on the way out).
+    expect(db.agents.all()).toEqual([{ ...agent, live: false }]);
   });
 
   test('lists agents scoped to a department', () => {

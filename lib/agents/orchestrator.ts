@@ -15,6 +15,7 @@
  * is a deliberate, scoped exception to that, and this boundary is why.
  */
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 import { createOpenAI } from '@ai-sdk/openai';
 import { generateObject, generateText } from 'ai';
 import { z } from 'zod';
@@ -30,7 +31,27 @@ function resolveOpenAIKey(): string | undefined {
   return resolveCred('OPENAI_API_KEY', [CRED_FILES.agentsEnv]);
 }
 
+// Golden Rule 1 — hardcoded here rather than left to arrive solely via the
+// .github/agent/identity.md fetch below: that fetch is best-effort and
+// currently unconfigured in this deployment (see lib/connectors/github.ts),
+// and a safety boundary this load-bearing must never silently disappear
+// from the prompt just because GitHub isn't wired up. The actual
+// enforcement is still code-level (proposeChange never calls
+// sandbox.writeFile; only applyApprovedChange does, and only via
+// approveAndApply's SLACK_APPROVAL_USER_IDS check) — this text keeps the
+// model's own self-description honest about that, it doesn't create the
+// boundary by itself.
+const ACTION_BOUNDARY_PROMPT =
+  'GOLDEN RULE — Three-Level Action Boundary. Every task sits at exactly one level, and you never escalate ' +
+  'yourself past it: (1) Draft — generate proposals/diffs/plans only, touching nothing outside your own output. ' +
+  '(2) Recommend — present choices, trade-offs, and next steps for the operator to decide on. (3) Act — file ' +
+  'writes, git pushes, or external API mutations, reachable ONLY after explicit human approval through the Slack ' +
+  'approval gate, never as a direct consequence of your own planning or drafting. Default every task to Draft or ' +
+  'Recommend. Never describe a task as "done", "applied", "pushed", or "deployed" — a drafted proposal is not a ' +
+  'completed action, no matter how confident you are in it.';
+
 const TECH_LEAD_SYSTEM_PROMPT =
+  `${ACTION_BOUNDARY_PROMPT}\n\n` +
   'You are the Tech Lead agent for FounderOS\'s internal Dev Team Agent suite. Break the operator\'s request into ' +
   'a small number (1-5) of concrete, independently-reviewable sub-tasks. Each task gets exactly one role: ' +
   '"tech_lead" for a scoping/investigation task with no code change, "developer" for a task that will draft a ' +
@@ -218,10 +239,13 @@ export async function proposeChange(task: Task): Promise<Task> {
   try {
     const operatorContext = await buildDraftingContext(task);
     const developerSystemPrompt =
-      'You are a Developer agent. You will be given a task and the CURRENT full content of one file (empty if ' +
-      'the file does not exist yet). Respond with ONLY the complete new file content — no explanation, no ' +
-      'markdown code fences, nothing but the file. Make the smallest change that satisfies the task. Follow the ' +
-      "operator's standards and acceptance criteria below when they apply to this file.";
+      `${ACTION_BOUNDARY_PROMPT}\n\n` +
+      'You are a Developer agent — you operate at the Draft level ONLY. You will be given a task and the CURRENT ' +
+      'full content of one file (empty if the file does not exist yet). Respond with ONLY the complete new file ' +
+      'content — no explanation, no markdown code fences, nothing but the file. Make the smallest change that ' +
+      'satisfies the task. What you produce here is a proposal for review; it is not written to disk by you, and ' +
+      "it never will be without a human approving it through the Slack gate. Follow the operator's standards and " +
+      'acceptance criteria below when they apply to this file.';
     const system = operatorContext ? `${developerSystemPrompt}\n\n${operatorContext}` : developerSystemPrompt;
     const openai = createOpenAI({ apiKey: key });
     const { text } = await generateText({
@@ -240,6 +264,43 @@ export async function proposeChange(task: Task): Promise<Task> {
   } catch (err) {
     return { ...executing, status: 'failed', result: { ok: false, summary: 'Draft generation failed', error: err instanceof Error ? err.message : String(err) }, updatedAt: now() };
   }
+}
+
+/** Entry point for lib/agents/tools/dev.ts's `propose_patch` tool — the
+    `dev` live agent hands a path + unified diff straight to this instead of
+    going through planFromRequest's LLM breakdown (the diff is already fully
+    specified by the calling model; there's nothing left to plan). Computes
+    what the file would look like via sandbox.applyUnifiedDiff (never
+    touches the real file), stores the result as a `validating` Task in the
+    same task store planFromRequest/runPlan use, and returns just enough for
+    the tool to report an honest `approval_required` refusal back to its
+    caller. The task then goes through the EXACT same human-approval path
+    as every other Dev Team Agent proposal — approveAndApply via
+    approveAndApply(taskId, approverId) — nothing new to trust here. */
+export async function proposePatchFromDiff(
+  targetFile: string,
+  diff: string,
+): Promise<{ ok: true; taskId: string; diffPreview: string } | { ok: false; error: string }> {
+  const applied = await sandbox.applyUnifiedDiff(targetFile, diff);
+  if (!applied.ok) return { ok: false, error: applied.error };
+
+  const preview = await sandbox.diffContent(applied.data.previousContent, applied.data.newContent, path.basename(targetFile));
+  const ts = now();
+  const task: Task = {
+    id: randomUUID(),
+    title: `Patch: ${targetFile}`,
+    description: 'Proposed via the dev agent\'s propose_patch tool.',
+    role: 'developer',
+    status: 'validating',
+    targetFiles: [targetFile],
+    proposedContent: applied.data.newContent,
+    previousContent: applied.data.previousContent,
+    result: { ok: true, summary: `Proposed a change to ${targetFile} — awaiting approval, nothing written yet.` },
+    createdAt: ts,
+    updatedAt: ts,
+  };
+  saveTask(task);
+  return { ok: true, taskId: task.id, diffPreview: preview.ok ? preview.data : diff };
 }
 
 // In-memory task store — process-lifetime only, not persisted across

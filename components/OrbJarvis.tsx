@@ -162,6 +162,18 @@ const SPEECH_SILENCE_TIMEOUT_MS = 1_000;
 // speech event and every new listening cycle (see armSilenceTimer).
 const CONTINUOUS_SESSION_IDLE_MS = 90_000;
 
+// Hard, last-resort ceiling on how long the orb can sit visibly "listening"
+// (red) at all. Deliberately INDEPENDENT of SPEECH_SILENCE_TIMEOUT_MS/
+// armSilenceTimer above — a plain wall-clock watchdog driven off the
+// `status` React state itself (see the useEffect below), not off any
+// SpeechRecognition event. Under normal operation this never fires: the 1s
+// silence timer already resolves every turn well before 5s. It exists so
+// that if that primary mechanism ever fails to fire for any reason (a
+// missed/stale event, a browser recognizer that never calls back), the
+// orb still can't hang in "listening" indefinitely — it forces a
+// transition out no matter what the rest of the pipeline is doing.
+const LISTENING_HARD_TIMEOUT_MS = 5_000;
+
 type BrainTurn = { role: "user" | "assistant"; content: string };
 // Client-side cap on how much conversation history is kept at all — the
 // server independently caps what it will actually use per request (see
@@ -427,6 +439,37 @@ export default function OrbJarvis() {
     setGlitching(true);
     const timer = window.setTimeout(() => setGlitching(false), 460);
     return () => window.clearTimeout(timer);
+  }, [status]);
+
+  // Hard listening-timeout watchdog (see LISTENING_HARD_TIMEOUT_MS above).
+  // Armed by React itself the instant `status` becomes "listening", and
+  // torn down by React's own cleanup the instant it changes to anything
+  // else — deliberately NOT wired through armSilenceTimer/startListening,
+  // so a bug in that imperative machinery can't also break this backstop.
+  useEffect(() => {
+    if (status !== "listening") return;
+    const timer = window.setTimeout(() => {
+      const transcript = listenBufferRef.current.trim();
+      console.warn(
+        `[Orb State] hard listening timeout (${LISTENING_HARD_TIMEOUT_MS}ms) — forcing out of "listening"`,
+        transcript ? "with a pending transcript" : "with nothing captured",
+      );
+      if (transcript) {
+        // Something was actually said but the normal pipeline never acted
+        // on it — force the turn forward instead of losing it.
+        listenBufferRef.current = "";
+        respondTo(transcript);
+      } else {
+        // Nothing captured — no partial turn to salvage, so a full clean
+        // reset ("or reset gracefully") is the right call here.
+        endSession();
+      }
+    }, LISTENING_HARD_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+    // respondTo/endSession close only over refs (listenBufferRef, handles,
+    // speech, historyRef, etc.) that stay stable across renders, so any
+    // render's version behaves identically — safe to omit from deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status]);
 
   useEffect(

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { openDb } from '@/lib/db';
 import { routeConductorMessage } from '@/lib/agents/conductor';
 import { realAgents } from '@/lib/agents/real';
+import { isLiveAgentId } from '@/lib/agents/tools';
 
 const prevLlm = process.env.LLM_PROVIDER;
 const prevBrain = process.env.BRAIN_PROVIDER;
@@ -19,21 +20,25 @@ afterAll(() => {
   else process.env.BRAIN_PROVIDER = prevBrain;
 });
 
-const routableIds = () => realAgents.filter((a) => a.id !== 'conductor').map((a) => a.id);
+// Candidate set is restricted to the "live" agents (dev/ops/research) — see
+// lib/agents/conductor.ts's routeConductorMessage. Every other seeded agent
+// is unreachable through the Conductor now, though still reachable directly
+// via /api/agents/[id]/chat and /api/agents/[id]/run.
+const routableIds = () => realAgents.filter((a) => a.id !== 'conductor' && isLiveAgentId(a.id)).map((a) => a.id);
 
 describe('routeConductorMessage (stub)', () => {
   test('@agent-id prefix routes straight to that agent and strips the prefix', async () => {
     const db = openDb(':memory:');
-    const res = await routeConductorMessage(db, realAgents, '@sales-agent what is pipeline?');
-    expect(res.routedTo).toBe('sales-agent');
+    const res = await routeConductorMessage(db, realAgents, '@dev what changed recently?');
+    expect(res.routedTo).toBe('dev');
     expect(res.reply.length).toBeGreaterThan(0);
-    expect(db.agentMessages.byAgent('sales-agent')[0].content).toBe('what is pipeline?');
+    expect(db.agentMessages.byAgent('dev')[0].content).toBe('what changed recently?');
   });
 
   test('@Name matches by humanized name slug too', async () => {
     const db = openDb(':memory:');
-    const res = await routeConductorMessage(db, realAgents, '@Data-Agent ping');
-    expect(res.routedTo).toBe('data-agent');
+    const res = await routeConductorMessage(db, realAgents, '@Dev-Agent ping');
+    expect(res.routedTo).toBe('dev');
   });
 
   test('a bare message routes to a valid non-conductor agent and returns a reply', async () => {
@@ -62,13 +67,13 @@ describe('POST /api/agents/conductor/chat', () => {
     const res = await POST(
       new Request('http://localhost/api/agents/conductor/chat', {
         method: 'POST',
-        body: JSON.stringify({ message: '@sales-agent how are deals?' }),
+        body: JSON.stringify({ message: '@dev how are things?' }),
       }),
       { params: Promise.resolve({ id: 'conductor' }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.routedTo).toBe('sales-agent');
+    expect(body.routedTo).toBe('dev');
     expect(typeof body.reply).toBe('string');
   });
 });

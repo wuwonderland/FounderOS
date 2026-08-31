@@ -7,6 +7,7 @@
  */
 import { chat as llmChat } from '@/lib/connectors/llm';
 import { chatWithAgent, type ChatResult } from '@/lib/agents/chat';
+import { isLiveAgentId } from '@/lib/agents/tools';
 import type { FounderDb } from '@/lib/db';
 import type { RuntimeAgent } from '@/lib/agents/runtime';
 
@@ -44,7 +45,25 @@ export async function routeConductorMessage(
   message: string,
   opts: { screenContext?: string } = {},
 ): Promise<ConductorResult> {
-  const routable = agents.filter((a) => a.id !== 'conductor');
+  // Candidate set restricted to the "live" agents — dev/ops/research today.
+  // Gated on lib/agents/tools/index.ts's LIVE_AGENT_IDS (the static list
+  // that actually determines whether an agent has a real tool-executing
+  // runAgent() loop behind it) rather than a live `db.agents` query: the
+  // `agents.live` column (see lib/db.ts's migrateAgentsTable) mirrors the
+  // same three ids for display/consistency, but making this routing gate
+  // depend on that row existing in whatever `db` a caller happens to pass
+  // in would be a fragile way to enforce it — an unseeded db would
+  // silently route nowhere. Every other seeded agent keeps working via its
+  // own direct /api/agents/[id]/chat and /api/agents/[id]/run routes;
+  // they're just no longer something the Conductor will route a message to.
+  const routable = agents.filter((a) => a.id !== 'conductor' && isLiveAgentId(a.id));
+  if (routable.length === 0) {
+    return {
+      routedTo: 'none',
+      reply: 'No live agents are configured yet — set `live = true` on at least one row in the agents table.',
+      messages: [],
+    };
+  }
   let targetId: string | undefined;
   let delivered = message;
 

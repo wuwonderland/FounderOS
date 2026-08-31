@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { getBrainProvider } from '@/lib/brain';
+import { resolveGoogleOAuthConfig } from '@/lib/connectors/google-oauth';
+import { readOnlyLlmTools } from '@/lib/agents/tools';
 import { createGBrainProvider } from '@/lib/connectors/gbrain';
 import { parseInboxConfigs, unreadCounts } from '@/lib/connectors/email';
 import { configuredProcessors, stripeSnapshot } from '@/lib/connectors/payments';
@@ -514,6 +516,63 @@ export const realAgents: RuntimeAgent[] = [
   },
 
   // ── Automations ──────────────────────────────────────────────────────
+  // ── Live agents: full tool-executing loop via POST /api/agents/run ─────
+  // run()/chatTools() below are the read-only status-check + chat surface
+  // every seeded agent needs (the seed test enforces "every seeded agent
+  // maps to a real runtime agent"); the real multi-step, write-gated tool
+  // loop is lib/agents/executor.ts's runAgent(), reached only through
+  // POST /api/agents/run — never through run() or chatWithAgent here.
+  {
+    id: 'dev',
+    name: 'Dev Agent',
+    description: 'Reads the FounderOS codebase and proposes patches. Full tool loop at POST /api/agents/run.',
+    departmentId: 'dept-tech',
+    async run() {
+      return {
+        ok: true,
+        summary: 'Dev agent ready — 3 read tools (read_file, list_files, search_code), 1 write tool (propose_patch → orchestrator.ts, Draft only).',
+      };
+    },
+    chatTools() {
+      return readOnlyLlmTools('dev');
+    },
+  },
+  {
+    id: 'ops',
+    name: 'Ops Agent',
+    description: 'Gmail/Calendar triage via FounderOS OAuth. Full tool loop at POST /api/agents/run.',
+    departmentId: 'dept-comms',
+    async run() {
+      const configured = Boolean(resolveGoogleOAuthConfig());
+      return {
+        ok: configured,
+        summary: configured
+          ? 'Ops agent ready — Google OAuth configured (Gmail + Calendar read tools live).'
+          : 'Ops agent not configured — set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN in .env.local.',
+      };
+    },
+    chatTools() {
+      return readOnlyLlmTools('ops');
+    },
+  },
+  {
+    id: 'research',
+    name: 'Research Agent',
+    description: 'Web search and page reading. Full tool loop at POST /api/agents/run.',
+    departmentId: 'dept-tech',
+    async run() {
+      const configured = Boolean(process.env.BRAVE_SEARCH_API_KEY);
+      return {
+        ok: configured,
+        summary: configured
+          ? 'Research agent ready — web_search configured (Brave Search), web_fetch always available.'
+          : 'Research agent partially ready — web_fetch works with no key; set BRAVE_SEARCH_API_KEY for web_search.',
+      };
+    },
+    chatTools() {
+      return readOnlyLlmTools('research');
+    },
+  },
   {
     id: 'stack-monitor',
     name: 'Stack Monitor',

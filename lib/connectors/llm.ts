@@ -241,6 +241,55 @@ export function chat(req: LlmChatRequest): Promise<LlmChatResult> {
   return getLlmProvider().chat(req);
 }
 
+/** Resolves a raw LanguageModel instead of running a chat call — for
+    callers (lib/agents/executor.ts) that need their own generateText call
+    with options runChat() doesn't expose (abortSignal, timeout,
+    onStepFinish, a configurable stopWhen). Same preference order and
+    LLM_PROVIDER override as getLlmProvider/chat above, but picks the first
+    CONFIGURED provider once rather than retrying every provider per call —
+    the executor's own multi-step run already has real cost/latency, and
+    silently retrying a partially-run tool-calling loop on a second model
+    if the first fails mid-flight would be its own can of worms. A genuine
+    failure (bad key, model rejected, provider down) surfaces as an honest
+    run failure instead. */
+export async function resolveExecutorModel(): Promise<{ model: LanguageModel; provider: string }> {
+  const forced = process.env.LLM_PROVIDER;
+  if (forced === 'stub') {
+    throw new Error('LLM_PROVIDER=stub has no real model to resolve — the executor loop needs a real provider.');
+  }
+
+  const candidates: [string, () => boolean, () => Promise<LanguageModel>][] = [
+    ['hermes', () => true, async () => {
+      const { createOpenAI } = await import('@ai-sdk/openai');
+      return createOpenAI({ baseURL: DEFAULT_HERMES_URL, apiKey: HERMES_PLACEHOLDER_KEY }).chat(DEFAULT_HERMES_MODEL);
+    }],
+    ['gateway', () => Boolean(resolveGatewayKey()), async () => {
+      const key = resolveGatewayKey()!;
+      if (!process.env.AI_GATEWAY_API_KEY) process.env.AI_GATEWAY_API_KEY = key;
+      const { gateway } = await import('ai');
+      return gateway(DEFAULT_MODEL);
+    }],
+    ['anthropic', () => Boolean(resolveAnthropicKey()), async () => {
+      const { createAnthropic } = await import('@ai-sdk/anthropic');
+      return createAnthropic({ apiKey: resolveAnthropicKey()! })(DEFAULT_ANTHROPIC_MODEL);
+    }],
+    ['openai', () => Boolean(resolveOpenAIKey()), async () => {
+      const { createOpenAI } = await import('@ai-sdk/openai');
+      return createOpenAI({ apiKey: resolveOpenAIKey()! }).chat(DEFAULT_OPENAI_MODEL);
+    }],
+  ];
+
+  const ordered = forced ? candidates.filter(([name]) => name === forced) : candidates;
+  for (const [name, has, make] of ordered) {
+    if (!has()) continue;
+    if (name === 'hermes' && !(await isHermesReachable())) continue; // "always configured" but skip if actually down
+    return { model: await make(), provider: name };
+  }
+  throw new Error(
+    'No LLM provider configured — start the Hermes proxy (`hermes proxy start`), set AI_GATEWAY_API_KEY (preferred), or ANTHROPIC_API_KEY / OPENAI_API_KEY, in .env.local.',
+  );
+}
+
 /** Quick TCP-level reachability check — localhost only, so a short timeout
     doesn't risk the slow-remote-call problem the rest of this file avoids
     (see file header). Used only to make llmStatus() honest about whether
